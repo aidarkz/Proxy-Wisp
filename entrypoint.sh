@@ -1,21 +1,29 @@
-#!/bin/sh
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
-echo "[Docker] START  ($PORTAL  ch=$CH_ID  every ${UPDATE_INTERVAL}s)"
+log() { printf '[Docker] %s\n' "$*"; }
 
-# 1) поднимем статический HTTP‑сервер (файлы лежат в /app)
-python -m http.server 80 --directory /app &
+log "START  ($PORTAL  ch=$CH_ID  every ${UPDATE_INTERVAL}s)"
+
+# ─── 1. поднимаем лёгкий HTTP‑сервер (порт 80) ────────────────────────────────
+python3 -m http.server 80 --bind 0.0.0.0 &
 HTTP_PID=$!
 
-# 2) бесконечный цикл обновления плейлиста
-while true; do
-    echo "[Docker] Обновление плейлиста..."
-    python /app/update_playlist.py \
-           --portal "$PORTAL" \
-           --ch "$CH_ID" \
-           --template "$PLAYLIST_TEMPLATE" \
-           --output   "$PLAYLIST_OUT" \
-           || echo "[WARN] update_playlist.py failed, retry in ${UPDATE_INTERVAL}s"
+# ─── 2. запускаем get_token.py в фоне и следим, чтобы он жил ──────────────────
+start_auth() {
+    log "starting get_token.py …"
+    python3 get_token.py --portal "$PORTAL" --ch "$CH_ID" &
+    AUTH_PID=$!
+}
+start_auth
 
+# ─── 3. вечный цикл: обновляем плейлист, ресайкл авторизацию при падении ──────
+while true; do
+    if ! kill -0 "$AUTH_PID" 2>/dev/null; then
+        log "get_token.py is dead → restart"
+        start_auth
+    fi
+
+    python3 update_playlist.py
     sleep "$UPDATE_INTERVAL"
 done
