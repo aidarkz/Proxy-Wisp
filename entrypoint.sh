@@ -1,20 +1,21 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+set -e
 
-echo "[Docker] START: $PORTAL CH=$CH_ID, interval ${UPDATE_INTERVAL}s"
+echo "[Docker] START  ($PORTAL  ch=$CH_ID  every ${UPDATE_INTERVAL}s)"
 
-# 1) бесконечно крутим get_token.py (чтобы всегда был запущен)
-( while true; do
-      python -u get_token.py --portal "$PORTAL" --ch "$CH_ID" || true
-      sleep "$UPDATE_INTERVAL"
-  done ) &
-GET_TOKEN_PID=$!
+# 1) поднимем статический HTTP‑сервер (файлы лежат в /app)
+python -m http.server 80 --directory /app &
+HTTP_PID=$!
 
-# 2) периодически вызываем update_playlist.py
+# 2) бесконечный цикл обновления плейлиста
 while true; do
-    python -u update_playlist.py
-    sleep "$UPDATE_INTERVAL"
-done &
+    echo "[Docker] Обновление плейлиста..."
+    python /app/update_playlist.py \
+           --portal "$PORTAL" \
+           --ch "$CH_ID" \
+           --template "$PLAYLIST_TEMPLATE" \
+           --output   "$PLAYLIST_OUT" \
+           || echo "[WARN] update_playlist.py failed, retry in ${UPDATE_INTERVAL}s"
 
-# 3) ждём детей (Ctrl‑C/<kill> корректно завершают всё благодаря tini)
-wait -n
+    sleep "$UPDATE_INTERVAL"
+done
