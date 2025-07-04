@@ -158,5 +158,9 @@ async def main():
     url = await auth.get_token_url(args.ch)
     print(f"[URL ] {url}")
 
+with open("token.txt", "w") as f:
+    f.write(token)
+print(f"[INFO] Token saved to token.txt: {token}")
+
 if __name__ == "__main__":
     asyncio.run(main())
