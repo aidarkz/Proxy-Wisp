@@ -1,41 +1,37 @@
-import asyncio, os, time, subprocess, sys, pathlib, shutil, tempfile
+import asyncio, os, pathlib, subprocess, sys, time, tempfile
 
-PORTAL   = os.getenv("PORTAL")
-CH_ID    = os.getenv("CH_ID")
-INTERVAL = int(os.getenv("UPDATE_INTERVAL", "300"))   # сек
-
-TEMPLATE = pathlib.Path("playlist_template.m3u8")
-OUTPUT   = pathlib.Path("playlist.m3u8")
-
-if not PORTAL or not CH_ID:
-    sys.exit("ENV PORTAL / CH_ID не заданы")
+PORTAL   = os.environ["PORTAL"]
+CH_ID    = os.environ["CH_ID"]
+TPL_PATH = pathlib.Path(os.environ.get("PLAYLIST_TEMPLATE", "playlist_template.m3u8"))
+OUT_PATH = pathlib.Path(os.environ.get("PLAYLIST_OUT",       "playlist.m3u8"))
 
 async def get_stream_url() -> str:
+    """Запускаем get_token.py и читаем STDOUT."""
     proc = await asyncio.create_subprocess_exec(
         sys.executable, "get_token.py",
-        "--portal", PORTAL, "--ch", str(CH_ID),
-        stdout=asyncio.subprocess.PIPE
+        "--portal", PORTAL, "--ch", CH_ID,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
     )
-    out, _ = await proc.communicate()
-    if proc.returncode:
-        raise RuntimeError("get_token.py exit %s" % proc.returncode)
-    return out.decode().strip()
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        raise RuntimeError(f"get_token.py failed ({proc.returncode}):\n{stderr.decode()}")
+    return stdout.decode().strip()
 
-def render_playlist(stream_url: str):
-    tmp = OUTPUT.with_suffix(".tmp")
-    txt = TEMPLATE.read_text(encoding="utf-8")
-    tmp.write_text(txt.replace("__URL__", stream_url), encoding="utf-8")
-    tmp.replace(OUTPUT)
+async def main() -> None:
+    url = await get_stream_url()
 
-async def main():
-    while True:
-        try:
-            url = await get_stream_url()
-            render_playlist(url)
-            print(f"[{time.strftime('%F %T')}] playlist updated → {url}")
-        except Exception as e:
-            print(f"[UPDATE‑ERROR] {e}", file=sys.stderr)
-        await asyncio.sleep(INTERVAL)
+    text = TPL_PATH.read_text(encoding="utf‑8").replace("__URL__", url)
+    with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf‑8") as tmp:
+        tmp.write(text)
+        tmp.flush()
+        os.replace(tmp.name, OUT_PATH)   # atomic
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{ts}] playlist updated")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception as exc:
+        print(f"UPDATE ERROR: {exc}", file=sys.stderr, flush=True)
+        sys.exit(1)
