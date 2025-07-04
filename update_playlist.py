@@ -1,55 +1,41 @@
-import asyncio, subprocess, re, sys, pathlib, os, datetime, http.client
+import asyncio, os, time, subprocess, sys, pathlib, shutil, tempfile
 
-BASE      = pathlib.Path(__file__).parent
-TEMPLATE  = BASE / "playlist_template.m3u8"
-OUTPUT    = BASE / "playlist.m3u8"
+PORTAL   = os.getenv("PORTAL")
+CH_ID    = os.getenv("CH_ID")
+INTERVAL = int(os.getenv("UPDATE_INTERVAL", "300"))   # сек
 
-PORTAL    = os.getenv("PORTAL" , "http://portal.wisp.cat")
-CH_ID     = os.getenv("CHANNEL", "3920")
-PY        = sys.executable
+TEMPLATE = pathlib.Path("playlist_template.m3u8")
+OUTPUT   = pathlib.Path("playlist.m3u8")
 
-# ────────────────────────── получить токен ──────────────────────────
-async def fetch_token() -> str:
+if not PORTAL or not CH_ID:
+    sys.exit("ENV PORTAL / CH_ID не заданы")
+
+async def get_stream_url() -> str:
     proc = await asyncio.create_subprocess_exec(
-        PY, "get_token.py",
-        "--portal", PORTAL,
-        "--ch", CH_ID,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE
+        sys.executable, "get_token.py",
+        "--portal", PORTAL, "--ch", str(CH_ID),
+        stdout=asyncio.subprocess.PIPE
     )
-    out_b, err_b = await proc.communicate()
-    out, err = out_b.decode(), err_b.decode()
+    out, _ = await proc.communicate()
+    if proc.returncode:
+        raise RuntimeError("get_token.py exit %s" % proc.returncode)
+    return out.decode().strip()
 
-    if proc.returncode != 0:
-        raise RuntimeError(f"get_token.py failed ({proc.returncode}): {err.strip()}")
+def render_playlist(stream_url: str):
+    tmp = OUTPUT.with_suffix(".tmp")
+    txt = TEMPLATE.read_text(encoding="utf-8")
+    tmp.write_text(txt.replace("__URL__", stream_url), encoding="utf-8")
+    tmp.replace(OUTPUT)
 
-    m = re.search(r"token=([0-9a-f]{32})", out)
-    if not m:
-        raise RuntimeError("token not found in output:\n" + out.strip())
-    return m.group(1)
-
-# ────────────────────────── keep‑awake ping ─────────────────────────
-def keep_awake():
-    try:
-        conn = http.client.HTTPConnection("lb.wisp.cat", timeout=3)
-        conn.request("HEAD", "/")
-        conn.close()
-    except Exception:
-        pass
-
-# ────────────────────────── основной цикл ───────────────────────────
 async def main():
     while True:
         try:
-            token = await fetch_token()
-            text  = TEMPLATE.read_text(encoding="utf-8").replace("{TOKEN}", token)
-            OUTPUT.write_text(text, encoding="utf-8")
-            print(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] playlist updated")
+            url = await get_stream_url()
+            render_playlist(url)
+            print(f"[{time.strftime('%F %T')}] playlist updated → {url}")
         except Exception as e:
-            print("UPDATE ERROR:", e, file=sys.stderr)
-
-        keep_awake()          # лёгкий ping каждые 5 минут
-        await asyncio.sleep(300)
+            print(f"[UPDATE‑ERROR] {e}", file=sys.stderr)
+        await asyncio.sleep(INTERVAL)
 
 if __name__ == "__main__":
     asyncio.run(main())
